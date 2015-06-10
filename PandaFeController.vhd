@@ -14,6 +14,8 @@
 --
 -- Dependencies: 
 --
+
+-- Revision:0.03 - adding receiving the command form asic
 -- Revision:0.02 - ASIC reset functionality added. At the fpga start up the line reset out
 --					is driven high for 25 bus_out clock cycles.
 -- Revision 0.01 - File Created
@@ -62,7 +64,7 @@ architecture Behavioral of PandaFeController is
 signal bus_clk : std_logic := '0';
 signal userRegData : std_logic_vector(31 downto 0);
 signal asicRegData : std_logic_vector(7 downto 0); 
-signal dataIndex : unsigned (4 downto 0) := b"10011";
+signal dataIndex : unsigned (4 downto 0) := b"10101"; --21
 signal writeEnable, writeEnable_q : std_logic;
 signal sendFlag : std_logic := '0';
 signal bus_clk_cnt : unsigned(11 downto 0)  := (others => '0');
@@ -72,7 +74,7 @@ signal write_ack_out, write_ack_out_q, write_ack_out_qq : std_logic;
 signal rst_cnt : unsigned (5 downto 0) := b"111111";
 signal asic_rst : std_logic  := '0';
 signal writeEnableLatch : std_logic := '0';
-
+signal readingData : std_logic := '0';
 --FSM 
 type state is (reseting, idle, send,closing, finalize);
 signal current_state, next_state : state;
@@ -113,7 +115,7 @@ lachtRegData : process(SYSCLK, REG_WRITE_ENABLE_IN)
 begin
   if rising_edge(SYSCLK) then
 	if(REG_WRITE_ENABLE_IN = '1') then
-		userRegData <= x"00" & b"00" &REG_DATA_IN(21 downto 0);
+		userRegData <= x"00"  & REG_DATA_IN(21 downto 0) & b"00";
 	else
 		userRegData <= userRegData;
 	end if;
@@ -133,7 +135,7 @@ writeEnable  <= '1' when REG_WRITE_ENABLE_IN = '1' and writeEnable_q  ='0' else 
 sendDataToRegister : process (SYSCLK,sendFlag,bus_clk)
 begin
 	if falling_edge(bus_clk) then
-		case  userRegData(20 downto 19) is 
+		case  userRegData(22 downto 21) is 
 			when "00" =>
 				DATA_LINE_OUT(0)  <= userRegData(to_integer(dataIndex));
 				DATA_LINE_OUT(1)  <= '0';
@@ -201,9 +203,9 @@ dataSending_FSM : process(SYSCLK, current_state,dataIndex,writeEnable,rst_cnt,us
 begin
    case current_state is
    		when  idle =>
-   			if(writeEnableLatch = '1' and userRegData(21) = '0') then
+   			if(writeEnableLatch = '1' and userRegData(23) = '0') then
    				next_state  <=  send;
-   			elsif (writeEnableLatch = '1' and userRegData(21) = '1') then
+   			elsif (writeEnableLatch = '1' and userRegData(23) = '1') then
    				    next_state  <= reseting;
 				else 
 					next_state <= idle;
@@ -215,7 +217,7 @@ begin
    				next_state  <= idle;
    			end if;	
    		when  send  => 
-   			if(dataIndex = b"00000") then
+   			if(dataIndex = b"00010") then
    				next_state  <= closing;
    			else
    				next_state  <= send;
@@ -240,15 +242,25 @@ end process;
 --  	end if;
 --   end if;	
 --end process;
-ReceivingData_proc : process(bus_clk,dataIndex)
+ReceivingData_proc : process(SYSCLK,bus_clk,dataIndex)
 begin
    if rising_edge(bus_clk) then
-   	if(dataIndex > 10)then
-   		--null;
-   		--asicRegData (to_integer(dataIndex - 11))  <= data_in_q; --does not simulate, why?
-   		asicRegData  <= asicRegData;
+   	if(dataIndex < 9 and dataIndex > 0)then
+		case  userRegData(22 downto 21) is 
+               when "00" =>
+                    asicRegData (to_integer(dataIndex)-1)  <= data_in_q(0); --does not simulate, why?
+               when "01" =>
+                    asicRegData (to_integer(dataIndex)-1)  <= data_in_q(1); --does not simulate, why?
+               when "10" =>
+                    asicRegData (to_integer(dataIndex)-1)  <= data_in_q(2); --does not simulate, why?
+               when others =>
+                   null;
+           end case;
+   	    readingData <= '1';
+   	    --asicRegData  <= asicRegData;
    	else
    	   --null;
+   		readingData <= '0';
    		asicRegData  <= asicRegData;
   	end if;
    end if;	
@@ -261,7 +273,7 @@ begin
 		if(current_state = send and RESET_IN = '0') then
 			dataIndex  <= dataIndex - x"1";
 		else
-			dataIndex   <= (b"10011");--19 dec		
+			dataIndex   <= (b"10101");--21 dec		
 		end if;
 	end if;
 end process;
@@ -288,21 +300,37 @@ begin
 	end if;
 end process;
 
-incomingDataFilter : process(SYSCLK)
+incomingDataFilter : process(SYSCLK,bus_clk)
 begin
 if falling_edge(bus_clk) then
     data_in_q <=DATA_LINE_IN;
 end if;
 end process;
 
+---------register write
+user_register_read : process (SYSCLK)
+begin
+if rising_edge(SYSCLK) then
+ if (REG_READ_ENABLE_IN  = '1' ) then
+    REG_WRITE_ACK_OUT <= '1';
+ else
+    REG_WRITE_ACK_OUT <= '0';
+ end if;
+ 
+ REG_DATAREADY_OUT <= not readingData;
+ REG_DATA_OUT<= x"000000" & asicRegData;
+end if;
+end process; 
+ 
 
-RESET_LINE_OUT(0)  <= asic_rst when (current_state = reseting ) and (userRegData(20 downto 19) = "00") else '1';
-RESET_LINE_OUT(1)  <= asic_rst when (current_state = reseting ) and (userRegData(20 downto 19) = "01") else '1';
-RESET_LINE_OUT(2)  <= asic_rst when (current_state = reseting ) and (userRegData(20 downto 19) = "10") else '1';
 
-BUS_CLK_OUT(0)  <=  bus_clk when (current_state /= idle ) and (userRegData(20 downto 19) = "00") else '0';
-BUS_CLK_OUT(1)  <=  bus_clk when (current_state /= idle ) and (userRegData(20 downto 19) = "01") else '0';
-BUS_CLK_OUT(2)  <=  bus_clk when (current_state /= idle ) and (userRegData(20 downto 19) = "10") else '0';
+RESET_LINE_OUT(0)  <= asic_rst when (current_state = reseting ) and (userRegData(22 downto 21) = "00") else '1';
+RESET_LINE_OUT(1)  <= asic_rst when (current_state = reseting ) and (userRegData(22 downto 21) = "01") else '1';
+RESET_LINE_OUT(2)  <= asic_rst when (current_state = reseting ) and (userRegData(22 downto 21) = "10") else '1';
+
+BUS_CLK_OUT(0)  <=  bus_clk when (current_state /= idle ) and (userRegData(22 downto 21) = "00") else '0';
+BUS_CLK_OUT(1)  <=  bus_clk when (current_state /= idle ) and (userRegData(22 downto 21) = "01") else '0';
+BUS_CLK_OUT(2)  <=  bus_clk when (current_state /= idle ) and (userRegData(22 downto 21) = "10") else '0';
 
 end Behavioral;
 
